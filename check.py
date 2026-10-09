@@ -1,34 +1,110 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Проверка статьи Гармония. Запуск: python3 check.py article_N.md
-Только стандартная библиотека, без внешних зависимостей.
-Выводит все метрики разом одним прогоном.
+Проверка статьи — Гармония (garmonia-clinica.ru)
+Запуск: python3 check.py article_N.md
+
+Параметры этой клиники (должны совпадать с файлом стиля на Google Drive —
+при изменении объёма или лимитов правь ОБА места):
+  объём 5500-6500 знаков без пробелов
+  жирных фрагментов: не больше 3
+  абзац: не длиннее 4 строк
+
+Блок «ИИ-ЯДРО» и блок «ОБЩИЕ ПРАВКИ» идентичны во всех пяти клиниках.
+Не меняй их в одном репозитории, не поменяв в остальных.
+Только стандартная библиотека Python.
 """
 import re, sys
+
+VMIN, VMAX = 5500, 6500
+BOLD_LIMIT = 3
+PARA_LINES = 4
+CHECK_EMERGENCY = True   # True — призыв в 103/112 требует ручного решения
+
+# ============================================================
+# ЕДИНОЕ ИИ-ЯДРО — одинаковое для всех пяти клиник
+# ============================================================
+
+CRIT_PATTERNS = [
+    (r'\bне\s+[^.!?\n]{1,60}?,\s+а\s+', 'не X, а Y'),
+    (r',\s+а\s+не\s+', 'Y, а не X'),
+    (r'\bэто\s+не\s+[^.!?\n]{1,50}?[,.]\s*это\s+', 'это не X, это Y'),
+    (r'\bне\s+просто\s+[^.!?\n]{1,50}?,\s*а\s+', 'не просто X, а Y'),
+    (r'\bне\s+только\s+[^.!?\n]{1,50}?,\s*но\s+и\s+', 'не только X, но и Y'),
+    (r'\bдело\s+не\s+в\s+', 'дело не в X'),
+]
+
+ROWS = [
+    (r'без\s+\w+[.,]\s*без\s+', 'ряд «без... без...»'),
+    (r'через\s+\w+[.,]\s*через\s+', 'ряд «через... через...»'),
+    (r'\bне\s+\w+,\s*не\s+\w+,\s*не\s+', 'ряд «не... не... не...»'),
+]
 
 STOP_WORDS = [
     "кроме того", "в контексте", "ключевой", "углубиться", "подчёркивая",
     "способствуя", "нюансы", "знаковый", "продемонстрировать", "акцентировать",
-    "поистине", "по-настоящему", "в самом сердце", "в современном мире",
-    "стоит отметить", "важно понимать", "важно отметить", "играет ключевую роль",
-    "играет важную роль", "подводя итог", "таким образом", "комплексный подход",
-    "идеально подходит для", "раскрыть потенциал", "выйти на новый уровень",
-    "открывает новые горизонты", "и вот почему", "и вот тут начинается",
+    "поистине", "по-настоящему", "в самом сердце", "ландшафт", "свидетельство",
+    "в современном мире", "в наше время", "не секрет что", "как известно",
+    "стоит отметить", "важно отметить", "важно понимать", "следует учитывать",
+    "нельзя не упомянуть", "более того", "таким образом", "в свою очередь",
+    "играет ключевую роль", "играет важную роль", "подводя итог", "в заключение",
+    "можно сделать вывод", "комплексный подход", "идеально подходит для",
+    "раскрыть потенциал", "выйти на новый уровень", "открывает новые горизонты",
+    "инновационное решение", "и вот почему", "и вот тут начинается",
+    "данный", "данная", "данное", "в рамках", "в целях", "на данный момент",
+    "в настоящее время", "представляет собой", "может похвастаться",
 ]
 
 FAKE_EMPATHY = [
     "вы не одиноки", "вы сильнее, чем думаете", "каждый шаг имеет значение",
-    "позвольте себе быть уязвимой", "вы справитесь",
+    "позвольте себе быть уязвимой", "вы справитесь", "всё будет хорошо",
+    "вы делаете всё правильно", "главное - не сдаваться",
 ]
 
-GUARANTEES = ["излечим", "100%", "навсегда", "гарантируем излечение"]
+GUARANTEES = ["излечим", "100%", "навсегда", "гарантируем излечение", "гарантированный результат"]
+
+# Внимание: проверка артефактов чата идёт с хвостовым (?!\w). Это нужно, чтобы
+# «давайте разберёмся» — рабочая конструкция канала «Гармония» — не ловилась
+# на подстроку «давайте разберём».
+CHAT_ARTIFACTS = [
+    "отличный вопрос", "хороший вопрос", "надеюсь это поможет", "надеюсь, это поможет",
+    "давайте рассмотрим", "давайте разберём", "конечно!", "безусловно!",
+]
+
+# ============================================================
+# ОБЩИЕ ПРАВКИ — одинаковые для всех пяти клиник
+# ============================================================
+
+# города: ни один не должен попасть в текст статьи
+CITIES = [
+    "краснодар", "ростов", "петербург", "питер", "новосибирск", "москв",
+    "екатеринбург", "воронеж", "самар", "нижний новгород", "сочи",
+]
+
+# служебные префиксы, которых не должно быть в заголовке
+H1_PREFIXES = ["тема", "статья", "пост", "заголовок", "title", "topic"]
+
+# повторяющиеся штампы канала «Гармония», выведенные из обращения
+RETIRED_PHRASES = [
+    "вы не преувеличиваете", "вы такая не одна", "вы не одна такая",
+    "детали вызова я изменил", "имена и детали изменены",
+]
+
+
+def text_for_colons(raw):
+    """Тело статьи без H1, URL, меток изображений и служебного слова «Подпись»."""
+    t = re.sub(r'^#\s+.*$', '', raw, flags=re.M)
+    t = re.sub(r'https?://\S+', '', t)
+    t = re.sub(r'!\[[^\]]*\]\([^)]*\)', '', t)
+    t = re.sub(r'\[\s*ИЗОБРАЖЕНИЕ[^\]]*\]', '', t, flags=re.I)
+    t = re.sub(r'(?i)\bподпис[ьи]\s*:', '', t)
+    t = re.sub(r'(?i)\balt\s*:', '', t)
+    return t
 
 
 def strip_markup(text):
-    """Убирает картинки, ссылки и подписи для честного подсчёта объёма тела статьи."""
-    t = re.sub(r'!\[[^\]]*\]\([^)]*\)', '', text)      # картинки
-    t = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', t)      # ссылки -> текст
+    t = re.sub(r'!\[[^\]]*\]\([^)]*\)', '', text)
+    t = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', t)
     return t
 
 
@@ -37,118 +113,195 @@ def main(path):
         raw = f.read()
     body = strip_markup(raw)
     low = body.lower()
+    problems = []
+    manual = []
 
-    print("=" * 60)
-    print(f"ПРОВЕРКА: {path}")
-    print("=" * 60)
+    print("=" * 64)
+    print("ПРОВЕРКА: Гармония (garmonia-clinica.ru)  |  файл: " + path)
+    print("=" * 64)
 
-    # --- объём ---
+    # --- объём (параметр клиники) ---
     no_spaces = len(re.sub(r'\s', '', body))
-    status = "OK" if 5500 <= no_spaces <= 6000 else "ВНЕ ДИАПАЗОНА 5500-6000"
-    print(f"\n[ОБЪЁМ] знаков без пробелов: {no_spaces} - {status}")
+    ok_vol = VMIN <= no_spaces <= VMAX
+    print(f"\n[ОБЪЁМ] знаков без пробелов: {no_spaces} (норма {VMIN}-{VMAX})" + ("" if ok_vol else "  !!"))
+    if not ok_vol:
+        problems.append("объём вне диапазона")
 
-    # --- КРИТИЧЕСКОЕ: конструкция "не X, а Y" и обратная ---
-    print("\n[КРИТИЧНО] противопоставление через отрицание:")
-    pats = [
-        (r'\bне\s+[^.!?\n]{1,60}?,\s+а\s+', 'не X, а Y'),
-        (r',\s+а\s+не\s+', 'Y, а не X'),
-        (r'\bэто\s+не\s+[^.!?\n]{1,50}?[,.]\s*это\s+', 'это не X, это Y'),
-        (r'\bне\s+просто\s+[^.!?\n]{1,50}?,\s*а\s+', 'не просто X, а Y'),
-        (r'\bне\s+только\s+[^.!?\n]{1,50}?,\s*но\s+и\s+', 'не только X, но и Y'),
-        (r'\bдело\s+не\s+в\s+', 'дело не в X'),
-    ]
+    # ====== ИИ-ЯДРО ======
+    print("\n[ИИ-ЯДРО] противопоставление через отрицание:")
     total_crit = 0
-    for pat, name in pats:
-        hits = list(re.finditer(pat, low))
-        if hits:
-            total_crit += len(hits)
-            print(f"  !! {name}: {len(hits)}")
-            for h in hits:
-                s = max(0, h.start() - 35); e = min(len(body), h.end() + 35)
-                print(f"     ...{body[s:e].strip()}...")
+    for pat, name in CRIT_PATTERNS:
+        for h in re.finditer(pat, low):
+            s = max(0, h.start() - 35); e = min(len(body), h.end() + 35)
+            mark = ""
+
+            total_crit += 1
+            print(f"  !! {name}: ...{body[s:e].replace(chr(10), ' ').strip()}...{mark}")
     if total_crit == 0:
-        print("  OK - 0 совпадений")
+        print("  0 - OK")
     else:
-        print(f"  ИТОГО КРИТИЧЕСКИХ: {total_crit} - ДОЛЖНО БЫТЬ 0")
+        print(f"  ВСЕГО: {total_crit} - должно быть 0")
+        problems.append("конструкции-маркеры")
 
-    # --- ряды отрицаний ---
-    print("\n[РЯДЫ] тройные конструкции:")
-    for pat, name in [(r'без\s+\w+[.,]\s*без\s+', 'ряд «без... без...»'),
-                      (r'через\s+\w+[.,]\s*через\s+', 'ряд «через... через...»'),
-                      (r'\bне\s+\w+,\s*не\s+\w+,\s*не\s+', 'ряд «не... не... не...»')]:
+    print("\n[ИИ-ЯДРО] ряды отрицаний:")
+    rows_found = 0
+    for pat, name in ROWS:
         n = len(re.findall(pat, low))
-        print(f"  {name}: {n}" + (" !!" if n else " - OK"))
+        if n:
+            rows_found += n
+            print(f"  !! {name}: {n}")
+    print("  0 - OK" if not rows_found else "")
+    if rows_found:
+        problems.append("ряды отрицаний")
 
-    # --- механика ---
-    print("\n[МЕХАНИКА]")
-    print(f"  длинное тире —: {body.count(chr(8212))}" + (" !!" if chr(8212) in body else " - OK"))
-    print(f"  короткое тире –: {body.count(chr(8211))}" + (" !!" if chr(8211) in body else " - OK"))
-    print(f"  стрелка →: {body.count(chr(8594))}")
-    print(f"  точка с запятой: {body.count(';')}")
-    bold = len(re.findall(r'\*\*[^*]+\*\*', raw))
-    print(f"  жирных фрагментов: {bold} (лимит 3)" + (" !!" if bold > 3 else " - OK"))
-    colons = body.count(':')
-    print(f"  двоеточий: {colons}")
+    print("\n[ИИ-ЯДРО] символы:")
+    dash_long = body.count(chr(8212)); dash_short = body.count(chr(8211))
+    print(f"  длинное тире: {dash_long}" + ("  !!" if dash_long else " - OK"))
+    print(f"  короткое тире: {dash_short}" + ("  !!" if dash_short else " - OK"))
+    print(f"  стрелки: {body.count(chr(8594))}   точка с запятой: {body.count(';')}")
+    if dash_long or dash_short:
+        problems.append("тире")
 
-    # --- кавычки: единообразие ---
-    yol = body.count('«')
-    straight = body.count('"')
+    yol, straight = body.count('«'), body.count('"')
     if yol and straight:
-        print(f"  !! СМЕШАНЫ кавычки: ёлочки {yol}, прямые {straight} - выбрать один тип")
+        print(f"  !! кавычки смешаны: ёлочки {yol}, прямые {straight}")
+        problems.append("смешаны кавычки")
     else:
-        print(f"  кавычки: ёлочки {yol}, прямые {straight} - OK (единообразно)")
+        print(f"  кавычки: ёлочки {yol}, прямые {straight} - единообразно")
 
-    # --- лексика ---
-    print("\n[ЛЕКСИКА]")
-    found = [(w, low.count(w)) for w in STOP_WORDS if w in low]
-    print("  стоп-слова: " + (", ".join(f"{w} x{n}" for w, n in found) if found else "0 - OK"))
+    print("\n[ИИ-ЯДРО] лексика:")
+    sw = [(w, low.count(w)) for w in STOP_WORDS if w in low]
+    print("  стоп-слова: " + (", ".join(f"{w} x{n}" for w, n in sw) + "  !!" if sw else "0 - OK"))
     fe = [w for w in FAKE_EMPATHY if w in low]
-    print("  фальшивая эмпатия: " + (", ".join(fe) if fe else "0 - OK"))
-    g = [w for w in GUARANTEES if w in low]
-    print("  гарантии: " + (", ".join(g) if g else "0 - OK"))
+    print("  фальшивая эмпатия: " + (", ".join(fe) + "  !!" if fe else "0 - OK"))
+    gu = [w for w in GUARANTEES if w in low]
+    print("  гарантии: " + (", ".join(gu) + "  !!" if gu else "0 - OK"))
+    ca = [w for w in CHAT_ARTIFACTS if re.search(re.escape(w) + r'(?!\w)', low)]
+    print("  артефакты чата: " + (", ".join(ca) + "  !!" if ca else "0 - OK"))
+    if sw or fe or gu or ca:
+        problems.append("лексика")
 
-    # --- частицы по абзацам ---
-    print("\n[ЧАСТИЦЫ] >2 на абзац:")
-    bad = 0
+    print("\n[ИИ-ЯДРО] частицы же/ведь/вот/-то, >2 на абзац:")
+    bad_p = 0
     for i, p in enumerate(body.split('\n\n'), 1):
         n = len(re.findall(r'\b(же|ведь|вот)\b|\w+-то\b', p.lower()))
         if n > 2:
-            bad += 1
+            bad_p += 1
             print(f"  !! абзац {i}: {n}")
-    if not bad:
-        print("  OK")
+    print("  OK" if not bad_p else "")
+    if bad_p:
+        problems.append("частицы")
 
-    # --- раскладка ---
-    print("\n[РАСКЛАДКА] латиница внутри русских слов:")
-    mix = re.findall(r'\b(?=\w*[а-яё])(?=\w*[a-z])\w+\b', body, re.IGNORECASE)
-    mix = [w for w in mix if not w.startswith('http')]
-    print("  " + (", ".join(set(mix)) + " !!" if mix else "0 - OK"))
+    print("\n[ИИ-ЯДРО] смешение кириллицы и латиницы внутри слова:")
+    mix = [w for w in re.findall(r'\b(?=\w*[а-яё])(?=\w*[a-z])\w+\b', body, re.I) if not w.startswith('http')]
+    print("  " + (", ".join(sorted(set(mix))) + "  !!" if mix else "0 - OK"))
+    if mix:
+        problems.append("раскладка")
 
-    # --- абзацы ---
-    print("\n[АБЗАЦЫ] длиннее 4 строк (~40 симв/строка):")
-    longp = 0
+    # ====== ОБЩИЕ ПРАВКИ ======
+    print("\n[ПРАВКИ] город в тексте:")
+    nourl = re.sub(r'https?://\S+', '', low)
+    found_city = sorted({c for c in CITIES if c in nourl})
+    print("  " + (", ".join(found_city) + "  !! город из текста убирается полностью" if found_city else "0 - OK"))
+    if found_city:
+        problems.append("город в тексте")
+
+    print("\n[ПРАВКИ] служебный префикс в заголовке:")
+    h1m = re.search(r'^#\s+(.+)$', raw, re.M)
+    h1t = h1m.group(1).strip() if h1m else ''
+    pref = re.match(r'(?i)^\s*(' + '|'.join(H1_PREFIXES) + r')\s*[:\-—]', h1t)
+    if not h1m:
+        print("  !! H1 не найден")
+        problems.append("нет H1")
+    elif pref:
+        print(f"  !! H1 начинается с «{pref.group(1)}:» — оставить только сам заголовок")
+        problems.append("префикс в H1")
+    else:
+        print("  0 - OK")
+    other_pref = [h for h in re.findall(r'^#{2,6}\s*(.+)$', raw, re.M)
+                  if re.match(r'(?i)^\s*(' + '|'.join(H1_PREFIXES) + r')\s*[:\-—]', h)]
+    if other_pref:
+        print("  !! тот же префикс в подзаголовках: " + "; ".join(other_pref[:5]))
+        problems.append("префикс в подзаголовке")
+
+    print("\n[ПРАВКИ] двоеточия в теле (лимит 1, H1 не считается):")
+    tc = text_for_colons(raw)
+    cols = [m.start() for m in re.finditer(r':', tc)]
+    for pos in cols:
+        s = max(0, pos - 40); e = min(len(tc), pos + 40)
+        print("  - ..." + tc[s:e].replace(chr(10), ' ').strip() + "...")
+    print(f"  всего: {len(cols)} (лимит 1)" + ("  !!" if len(cols) > 1 else " - OK"))
+    if len(cols) > 1:
+        problems.append("двоеточий больше одного")
+
+    print("\n[ПРАВКИ] выведенные из обращения фразы:")
+    rp = [w for w in RETIRED_PHRASES if w in low]
+    print("  " + (", ".join(rp) + "  !!" if rp else "0 - OK"))
+    if rp:
+        problems.append("штампованные фразы")
+
+    print("\n[ПРАВКИ] призыв в 103/112:")
+    emg = []
+    for m in re.finditer(r'(?<!\d)(103|112)(?!\d)', body):
+        s = max(0, m.start() - 60); e = min(len(body), m.end() + 60)
+        emg.append(body[s:e].replace(chr(10), ' ').strip())
+    if not emg:
+        print("  0 - OK")
+    elif CHECK_EMERGENCY:
+        for c in emg:
+            print("  ?  ..." + c + "...")
+        print(f"  найдено {len(emg)} — допустимо ТОЛЬКО в абзаце про угрожающее жизни состояние.")
+        print("     В CTA и в концовке — убрать. Решение ручное, скрипт за тебя его не примет.")
+        manual.append("проверить 103/112 по месту")
+    else:
+        for c in emg:
+            print("  i  ..." + c + "...")
+        print(f"  найдено {len(emg)} — для этого канала номера допустимы, но только по месту, не концовкой.")
+        manual.append("проверить, что 103/112 стоят по месту")
+
+    print("\n[ПРАВКИ] распределение изображений:")
+    img_marks = [m.start() for m in re.finditer(r'(?:!\[|\[\s*ИЗОБРАЖЕНИЕ)', raw, re.I)]
+    print(f"  меток изображений: {len(img_marks)}")
+    if len(img_marks) >= 2:
+        gaps = [img_marks[i + 1] - img_marks[i] for i in range(len(img_marks) - 1)]
+        tight = [g for g in gaps if g < 400]
+        print(f"  промежутки между метками (знаков): {gaps}")
+        if tight:
+            print("  !! две метки стоят почти подряд — изображения распределяются равномерно")
+            problems.append("изображения не распределены")
+        else:
+            print("  распределены - OK")
+
+    # ====== параметры клиники ======
+    print("\n[ФОРМАТ]")
+    bold = len(re.findall(r'\*\*[^*]+\*\*', raw))
+    print(f"  жирных фрагментов: {bold} (лимит {BOLD_LIMIT})" + ("  !!" if bold > BOLD_LIMIT else " - OK"))
+    if bold > BOLD_LIMIT:
+        problems.append("жирного больше лимита")
+
+    long_p = 0
     for i, p in enumerate(body.split('\n\n'), 1):
         p = p.strip()
         if p.startswith('#') or not p:
             continue
-        if len(p) / 40 > 4.5:
-            longp += 1
-            print(f"  !! абзац {i}: ~{round(len(p)/40)} строк")
-    if not longp:
-        print("  OK")
+        if len(p) / 40 > PARA_LINES + 0.5:
+            long_p += 1
+            print(f"  !! абзац {i}: ~{round(len(p)/40)} строк (лимит {PARA_LINES})")
+    if not long_p:
+        print(f"  абзацы в пределах {PARA_LINES} строк - OK")
+    else:
+        problems.append("длинные абзацы")
 
-    # --- ссылки ---
     print("\n[ССЫЛКИ]")
-    links = re.findall(r'https?://[^\s)]+', raw)
-    for l in set(links):
-        print(f"  {l}")
+    for l in sorted(set(re.findall(r'https?://[^\s)]+', raw))):
+        print("  " + l)
+    print(f"[КАРТИНКИ] найдено: {raw.count(chr(33) + chr(91))}")
 
-    # --- итог ---
-    print("\n" + "=" * 60)
-    ok = (total_crit == 0 and 5500 <= no_spaces <= 6000 and bold <= 3
-          and not mix and not (yol and straight))
-    print("ИТОГ: " + ("ГОТОВО К СДАЧЕ" if ok else "ЕСТЬ ЗАМЕЧАНИЯ - СМОТРИ !! ВЫШЕ"))
-    print("=" * 60)
+    print("\n" + "=" * 64)
+    print("ИТОГ: ГОТОВО К СДАЧЕ" if not problems else "ИТОГ: ЕСТЬ ЗАМЕЧАНИЯ - " + ", ".join(problems))
+    if manual:
+        print("РУЧНОЕ РЕШЕНИЕ: " + ", ".join(manual))
+    print("=" * 64)
 
 
 if __name__ == '__main__':
